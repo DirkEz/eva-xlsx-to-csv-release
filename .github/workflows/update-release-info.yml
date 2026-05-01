@@ -1,0 +1,103 @@
+name: Update Release Info
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  update-release-info:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout release repo
+        uses: actions/checkout@v4
+
+      - name: Get latest release from app repo
+        id: release
+        shell: bash
+        run: |
+          RESPONSE=$(curl -s \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/DirkEz/eva-eduroam-xlsx-to-csv/releases/latest)
+
+          TAG=$(echo "$RESPONSE" | jq -r '.tag_name')
+          NAME=$(echo "$RESPONSE" | jq -r '.name')
+          URL=$(echo "$RESPONSE" | jq -r '.html_url')
+          BODY=$(echo "$RESPONSE" | jq -r '.body // ""')
+          ASSET_URL=$(echo "$RESPONSE" | jq -r '.assets[0].browser_download_url // ""')
+
+          if [ "$TAG" = "null" ] || [ -z "$TAG" ]; then
+            echo "Geen release gevonden in bronrepo."
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "asset_url=$ASSET_URL" >> $GITHUB_OUTPUT
+
+          {
+            echo "body<<EOF"
+            echo "$BODY"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Update README
+        env:
+          BLOCK: |
+            <!-- RELEASE_INFO_START -->
+            ## Nieuwste release
+
+            **Versie:** ${{ steps.release.outputs.tag }}
+
+            **Release:** [${{ steps.release.outputs.name }}](${{ steps.release.outputs.url }})
+
+            **Download:** [Windows EXE downloaden](${{ steps.release.outputs.asset_url }})
+
+            ### Changelog
+
+            ${{ steps.release.outputs.body }}
+
+            <!-- RELEASE_INFO_END -->
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          readme = Path("README.md")
+          text = readme.read_text(encoding="utf-8") if readme.exists() else ""
+
+          start = "<!-- RELEASE_INFO_START -->"
+          end = "<!-- RELEASE_INFO_END -->"
+          block = os.environ["BLOCK"]
+
+          if start in text and end in text:
+              before = text.split(start)[0]
+              after = text.split(end)[1]
+              text = before + block + after
+          else:
+              text = text.rstrip() + "\n\n" + block + "\n"
+
+          readme.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Commit README update
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add README.md
+
+          if git diff --cached --quiet; then
+            echo "Geen wijzigingen."
+            exit 0
+          fi
+
+          git commit -m "Update latest release info"
+          git push
